@@ -1,20 +1,24 @@
-import admin from "firebase-admin";
-import serviceAccount from "./serviceAccountKey.json" assert { type: "json" };
+import * as dotenv from "dotenv";
+dotenv.config();
 
-// Verify the project ID matches
-if (serviceAccount.project_id !== "meet-pro-d9458") {
-  throw new Error("Service account project ID doesn't match Firebase project");
-}
+import admin from "firebase-admin";
 
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
-      ...serviceAccount,
-      private_key: serviceAccount.private_key.replace(/\\n/g, "\n"),
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
     }),
-    databaseURL: "https://meet-pro-d9458.firebaseio.com",
   });
 }
+
+console.log("Loaded env:", {
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+  privateKeyFirstChars: process.env.FIREBASE_PRIVATE_KEY?.slice(0, 30),
+  privateKeyIncludesNewlines: process.env.FIREBASE_PRIVATE_KEY?.includes("\\n"),
+});
 
 const db = admin.firestore();
 

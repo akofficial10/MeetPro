@@ -89,54 +89,52 @@ export default function History() {
       <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-red-500 rounded-full filter blur-3xl opacity-10 -z-10"></div>
 
       {/* Navbar */}
-      <nav className="flex justify-between items-center px-8 py-6 z-10">
+      <nav className="flex justify-between items-center px-8 py-6 relative z-10">
         <div className="text-3xl font-bold text-white">
-          <span className="text-red-500">▶</span> Meet
+          <span className="text-red-500">Meet</span>
           <span className="text-red-500">Pro</span>
         </div>
-        <div className="flex items-center space-x-6">
-          <button
-            onClick={logout}
-            className="bg-gradient-to-r from-red-600 to-red-800 text-white px-6 py-2 rounded-full hover:from-red-700 hover:to-red-900 transition-all shadow-lg flex items-center space-x-2"
+        <button
+          onClick={logout}
+          className="bg-gradient-to-r from-red-600 to-red-800 text-white px-6 py-2 rounded-full hover:from-red-700 hover:to-red-900 transition-all shadow-lg flex items-center space-x-2"
+        >
+          <span>Logout</span>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            className="h-5 w-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
           >
-            <span>Logout</span>
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
-              />
-            </svg>
-          </button>
-        </div>
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth={2}
+              d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+            />
+          </svg>
+        </button>
       </nav>
 
+      {/* Header (Improved) */}
+      <header className="sticky top-0 z-20 bg-black/60 backdrop-blur-sm border-b border-gray-800 px-6 md:px-12 py-4 flex items-center justify-between">
+        <button
+          onClick={() => navigate("/home")}
+          className="flex items-center gap-2 text-gray-300 hover:text-red-400 transition"
+        >
+          <HomeIcon className="w-6 h-6" />
+          <span className="text-lg font-medium">Back to Home</span>
+        </button>
+        <h2 className="text-2xl md:text-3xl font-bold text-white">
+          <span className="text-transparent bg-clip-text bg-gradient-to-r from-red-400 to-red-600">
+            Meeting
+          </span>{" "}
+          History
+        </h2>
+      </header>
+
       {/* Main Content */}
-      <div className="container mx-auto px-6 py-12 z-10 relative">
-        <div className="flex items-center justify-between mb-12">
-          <button
-            onClick={() => navigate("/home")}
-            className="flex items-center gap-3 text-gray-300 hover:text-white transition group"
-          >
-            <HomeIcon className="w-6 h-6 group-hover:text-red-500 transition" />
-            <span className="text-lg font-medium">Back to Home</span>
-          </button>
-
-          <h2 className="text-4xl font-bold text-white">
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-red-400 to-red-600">
-              Meeting
-            </span>{" "}
-            History
-          </h2>
-        </div>
-
+      <div className="container mx-auto px-6 py-8 z-10 relative">
         {meetings.length > 0 ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {meetings.map((meeting, index) => (
