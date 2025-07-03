@@ -5,6 +5,7 @@ import {
   login,
   register,
   googleAuth,
+  verifyToken
 } from "../controllers/userController.js";
 
 const router = Router();
@@ -23,5 +24,7 @@ router.post("/add_to_activity", addToHistory);
 
 // Get all activity for user
 router.get("/get_all_activity", getUserHistory);
+
+router.get("/verify-token", verifyToken);
 
 export default router;

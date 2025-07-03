@@ -10,6 +10,11 @@ import {
   Tooltip,
   Snackbar,
   Alert,
+  CircularProgress,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
 } from "@mui/material";
 import {
   Videocam,
@@ -28,6 +33,7 @@ import {
   Settings,
   Fullscreen,
   FullscreenExit,
+  FiberManualRecord,
 } from "@mui/icons-material";
 import server from "../environment";
 import { useAuth } from "../contexts/AuthContext";
@@ -43,9 +49,13 @@ const peerConfigConnections = {
   ],
 };
 
+const generateRandomCode = () => {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+};
+
 export default function VideoMeetComponent() {
   const navigate = useNavigate();
-  const { userData, addToUserHistory } = useAuth();
+  const { userData, addToUserHistory, token } = useAuth();
   const connectionsRef = useRef({});
   const socketRef = useRef();
   const socketIdRef = useRef();
@@ -54,6 +64,8 @@ export default function VideoMeetComponent() {
   const chatContainerRef = useRef();
   const participantsContainerRef = useRef();
   const meetingContainerRef = useRef();
+  const reconnectAttemptsRef = useRef(0);
+  const recordingIntervalRef = useRef(null);
 
   const [videoAvailable, setVideoAvailable] = useState(true);
   const [audioAvailable, setAudioAvailable] = useState(true);
@@ -69,31 +81,62 @@ export default function VideoMeetComponent() {
   const [askForUsername, setAskForUsername] = useState(true);
   const [username, setUsername] = useState(userData?.name || "");
   const [videos, setVideos] = useState([]);
-  const pathParts = window.location.pathname.split("/");
-  const [meetingCode] = useState(
-    pathParts[pathParts.length - 1] || "default-room"
-  );
+  const [meetingCode, setMeetingCode] = useState("");
   const [fullscreen, setFullscreen] = useState(false);
   const [meetingTime, setMeetingTime] = useState(0);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [snackbarSeverity, setSnackbarSeverity] = useState("info");
   const [participants, setParticipants] = useState([]);
+  const [connectionStatus, setConnectionStatus] = useState("disconnected");
+  const [loading, setLoading] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [showJoinDialog, setShowJoinDialog] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
 
   const particlesInit = async (engine) => {
     await loadSlim(engine);
   };
 
-  // Timer effect
+  // Extract meeting code from URL
+  useEffect(() => {
+    const pathParts = window.location.pathname.split("/");
+    let code = pathParts[pathParts.length - 1];
+
+    if (!code || code.length < 3) {
+      code = generateRandomCode();
+      navigate(`/meet/${code}`, { replace: true });
+    }
+
+    setMeetingCode(code);
+    setShowJoinDialog(true);
+  }, [navigate]);
+
+  // Timer effects
   useEffect(() => {
     let timer;
-    if (!askForUsername) {
+    if (connectionStatus === "connected") {
       timer = setInterval(() => {
         setMeetingTime((prev) => prev + 1);
       }, 1000);
     }
     return () => clearInterval(timer);
-  }, [askForUsername]);
+  }, [connectionStatus]);
+
+  useEffect(() => {
+    if (isRecording) {
+      recordingIntervalRef.current = setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+      }, 1000);
+    } else {
+      clearInterval(recordingIntervalRef.current);
+    }
+
+    return () => {
+      clearInterval(recordingIntervalRef.current);
+    };
+  }, [isRecording]);
 
   const formatMeetingTime = (seconds) => {
     const hours = Math.floor(seconds / 3600);
@@ -103,6 +146,19 @@ export default function VideoMeetComponent() {
     return `${hours > 0 ? hours + ":" : ""}${
       minutes < 10 ? "0" + minutes : minutes
     }:${secs < 10 ? "0" + secs : secs}`;
+  };
+
+  const toggleRecording = () => {
+    setIsRecording(!isRecording);
+    if (!isRecording) {
+      setRecordingTime(0);
+      showSnackbar("Recording started", "success");
+    } else {
+      showSnackbar(
+        `Recording stopped - Duration: ${formatMeetingTime(recordingTime)}`,
+        "info"
+      );
+    }
   };
 
   const toggleFullscreen = () => {
@@ -133,22 +189,18 @@ export default function VideoMeetComponent() {
     setSnackbarOpen(false);
   };
 
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setFullscreen(!!document.fullscreenElement);
-    };
-
-    document.addEventListener("fullscreenchange", handleFullscreenChange);
-    document.addEventListener("webkitfullscreenchange", handleFullscreenChange);
-
-    return () => {
-      document.removeEventListener("fullscreenchange", handleFullscreenChange);
-      document.removeEventListener(
-        "webkitfullscreenchange",
-        handleFullscreenChange
-      );
-    };
-  }, []);
+  const handleJoinMeeting = () => {
+    setShowJoinDialog(false);
+    if (!username.trim()) {
+      showSnackbar("Please enter your name", "error");
+      return;
+    }
+    setAskForUsername(false);
+    getPermissions().then(() => {
+      connectToSocketServer();
+      getUserMedia();
+    });
+  };
 
   const getPermissions = async () => {
     try {
@@ -209,13 +261,11 @@ export default function VideoMeetComponent() {
       if (id === socketIdRef.current) return;
 
       try {
-        // Remove existing tracks
         const senders = connectionsRef.current[id].getSenders();
         senders.forEach((sender) =>
           connectionsRef.current[id].removeTrack(sender)
         );
 
-        // Add new tracks
         stream.getTracks().forEach((track) => {
           connectionsRef.current[id].addTrack(track, stream);
         });
@@ -290,13 +340,11 @@ export default function VideoMeetComponent() {
       if (id === socketIdRef.current) return;
 
       try {
-        // Remove existing tracks
         const senders = connectionsRef.current[id].getSenders();
         senders.forEach((sender) =>
           connectionsRef.current[id].removeTrack(sender)
         );
 
-        // Add new tracks
         stream.getTracks().forEach((track) => {
           connectionsRef.current[id].addTrack(track, stream);
         });
@@ -347,28 +395,97 @@ export default function VideoMeetComponent() {
     }
   };
 
+  const handleReconnect = () => {
+    if (reconnectAttemptsRef.current < 5) {
+      reconnectAttemptsRef.current += 1;
+      const delay = Math.min(1000 * reconnectAttemptsRef.current, 5000);
+
+      showSnackbar(
+        `Attempting to reconnect (${reconnectAttemptsRef.current}/5)`,
+        "info"
+      );
+
+      setTimeout(() => {
+        connectToSocketServer();
+      }, delay);
+    } else {
+      showSnackbar(
+        "Failed to reconnect after multiple attempts. Please refresh the page.",
+        "error"
+      );
+      setReconnecting(false);
+      setConnectionStatus("disconnected");
+    }
+  };
+
   const connectToSocketServer = () => {
-    socketRef.current = io.connect(server_url, { secure: false });
+    if (!meetingCode) return;
+
+    setLoading(true);
+    setConnectionStatus("connecting");
+
+    socketRef.current = io.connect(server_url, {
+      secure: false,
+      query: {
+        room: meetingCode,
+        username: username,
+        token: token,
+      },
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      auth: {
+        token: token,
+      },
+    });
 
     socketRef.current.on("connect_error", (err) => {
       console.error("Connection error:", err);
-      showSnackbar(
-        "Failed to connect to server. Trying to reconnect...",
-        "error"
-      );
+      setConnectionStatus("disconnected");
+      setLoading(false);
+      setReconnecting(true);
+      handleReconnect();
     });
 
     socketRef.current.on("reconnect_failed", () => {
+      setConnectionStatus("disconnected");
+      setLoading(false);
+      setReconnecting(false);
       showSnackbar(
         "Failed to reconnect to server. Please refresh the page.",
         "error"
       );
     });
 
+    socketRef.current.on("reconnect", (attemptNumber) => {
+      console.log(`Reconnected after ${attemptNumber} attempts`);
+      setConnectionStatus("connected");
+      setLoading(false);
+      setReconnecting(false);
+      reconnectAttemptsRef.current = 0;
+      showSnackbar("Reconnected to the meeting", "success");
+
+      if (meetingCode) {
+        socketRef.current.emit("join-call", meetingCode);
+      }
+    });
+
     socketRef.current.on("connect", () => {
+      setConnectionStatus("connected");
+      setLoading(false);
+      reconnectAttemptsRef.current = 0;
       socketIdRef.current = socketRef.current.id;
       socketRef.current.emit("join-call", meetingCode);
-      showSnackbar("Connected to meeting room", "success");
+    });
+
+    socketRef.current.on("room-joined", (room) => {
+      showSnackbar(`Joined meeting room: ${room}`, "success");
+    });
+
+    socketRef.current.on("join-error", (error) => {
+      setConnectionStatus("disconnected");
+      setLoading(false);
+      showSnackbar(`Error joining room: ${error}`, "error");
     });
 
     socketRef.current.on("signal", gotMessageFromServer);
@@ -396,10 +513,7 @@ export default function VideoMeetComponent() {
           return (
             existingParticipants.get(client) || {
               id: client,
-              name:
-                client === socketIdRef.current
-                  ? username
-                  : `User ${client.substring(0, 4)}`,
+              name: client === socketIdRef.current ? username : "Loading...",
             }
           );
         });
@@ -477,7 +591,6 @@ export default function VideoMeetComponent() {
             });
           }
 
-          // Only create offer if we're the newer participant
           if (socketListId > socketIdRef.current) {
             peerConnection
               .createOffer()
@@ -598,12 +711,6 @@ export default function VideoMeetComponent() {
     }
   };
 
-  const connect = () => {
-    setAskForUsername(false);
-    connectToSocketServer();
-    getUserMedia();
-  };
-
   const handleVideo = () => {
     setVideo((prev) => {
       const newValue = !prev;
@@ -678,12 +785,13 @@ export default function VideoMeetComponent() {
   };
 
   useEffect(() => {
-    getPermissions();
     if (userData) {
       setUsername(userData.name);
       setAskForUsername(false);
     }
+  }, [userData]);
 
+  useEffect(() => {
     return () => {
       if (window.localStream) {
         window.localStream.getTracks().forEach((track) => track.stop());
@@ -720,82 +828,6 @@ export default function VideoMeetComponent() {
         chatContainerRef.current.scrollHeight;
     }
   }, [messages]);
-
-  const PreMeetingControls = () => (
-    <div className="flex flex-col items-center justify-center flex-1 p-6 space-y-6 z-10">
-      <div className="bg-gray-900/80 backdrop-blur-sm rounded-2xl p-8 border border-gray-800 max-w-md w-full">
-        <h2 className="text-3xl font-bold text-center mb-6">
-          Ready to <span className="text-red-500">Join?</span>
-        </h2>
-
-        <div className="mb-6 flex justify-center">
-          <div className="relative w-64 h-48 bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
-            {video ? (
-              <video
-                ref={localVideoref}
-                autoPlay
-                muted
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center bg-gray-900">
-                <div className="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center">
-                  <Avatar className="w-16 h-16 text-3xl">
-                    {username.charAt(0).toUpperCase()}
-                  </Avatar>
-                </div>
-              </div>
-            )}
-
-            <div className="absolute bottom-2 left-0 right-0 flex justify-center space-x-2">
-              <Tooltip title={video ? "Turn off camera" : "Turn on camera"}>
-                <button
-                  onClick={handleVideo}
-                  className={`p-2 rounded-full ${
-                    video
-                      ? "bg-gray-700 hover:bg-gray-600"
-                      : "bg-red-600 hover:bg-red-700"
-                  }`}
-                >
-                  {video ? (
-                    <Videocam className="text-white" />
-                  ) : (
-                    <VideocamOff className="text-white" />
-                  )}
-                </button>
-              </Tooltip>
-
-              <Tooltip title={audio ? "Mute microphone" : "Unmute microphone"}>
-                <button
-                  onClick={handleAudio}
-                  className={`p-2 rounded-full ${
-                    audio
-                      ? "bg-gray-700 hover:bg-gray-600"
-                      : "bg-red-600 hover:bg-red-700"
-                  }`}
-                >
-                  {audio ? (
-                    <Mic className="text-white" />
-                  ) : (
-                    <MicOff className="text-white" />
-                  )}
-                </button>
-              </Tooltip>
-            </div>
-          </div>
-        </div>
-
-        <Button
-          variant="contained"
-          color="primary"
-          onClick={connect}
-          className="w-full py-3 bg-gradient-to-r from-red-600 to-red-800 hover:from-red-700 hover:to-red-900"
-        >
-          Join Meeting
-        </Button>
-      </div>
-    </div>
-  );
 
   return (
     <div
@@ -849,9 +881,137 @@ export default function VideoMeetComponent() {
       <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-red-500 rounded-full filter blur-3xl opacity-5 -z-10"></div>
       <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-red-500 rounded-full filter blur-3xl opacity-5 -z-10"></div>
 
-      {askForUsername && !userData ? (
-        <PreMeetingControls />
-      ) : (
+      <Dialog
+        open={showJoinDialog}
+        onClose={() => setShowJoinDialog(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle className="bg-gray-900 text-white">
+          Join Meeting
+        </DialogTitle>
+        <DialogContent className="bg-gray-900 text-white">
+          <div className="flex flex-col items-center py-6">
+            <div className="mb-6 flex justify-center">
+              <div className="relative w-64 h-48 bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
+                {video ? (
+                  <video
+                    ref={localVideoref}
+                    autoPlay
+                    muted
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center bg-gray-900">
+                    <div className="w-20 h-20 rounded-full bg-gray-800 flex items-center justify-center">
+                      <Avatar className="w-16 h-16 text-3xl">
+                        {username.charAt(0).toUpperCase()}
+                      </Avatar>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <TextField
+              fullWidth
+              label="Your Name"
+              variant="outlined"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              InputProps={{
+                className: "text-white",
+              }}
+              InputLabelProps={{
+                className: "text-gray-400",
+              }}
+              className="mb-4"
+            />
+
+            <div className="flex gap-2 mb-4">
+              <Tooltip title={video ? "Turn off camera" : "Turn on camera"}>
+                <Button
+                  onClick={() => setVideo(!video)}
+                  variant={video ? "contained" : "outlined"}
+                  color={video ? "primary" : "inherit"}
+                  startIcon={video ? <Videocam /> : <VideocamOff />}
+                >
+                  {video ? "Camera On" : "Camera Off"}
+                </Button>
+              </Tooltip>
+
+              <Tooltip title={audio ? "Mute microphone" : "Unmute microphone"}>
+                <Button
+                  onClick={() => setAudio(!audio)}
+                  variant={audio ? "contained" : "outlined"}
+                  color={audio ? "primary" : "inherit"}
+                  startIcon={audio ? <Mic /> : <MicOff />}
+                >
+                  {audio ? "Mic On" : "Mic Off"}
+                </Button>
+              </Tooltip>
+            </div>
+
+            <div className="bg-gray-800 rounded-lg p-4 text-center w-full">
+              <p className="text-sm text-gray-400">Meeting Code</p>
+              <p className="font-mono text-lg">{meetingCode}</p>
+            </div>
+          </div>
+        </DialogContent>
+        <DialogActions className="bg-gray-900">
+          <Button onClick={() => navigate("/home")} color="error">
+            Cancel
+          </Button>
+          <Button
+            onClick={handleJoinMeeting}
+            variant="contained"
+            color="primary"
+            disabled={loading}
+          >
+            {loading ? <CircularProgress size={24} /> : "Join Meeting"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {(loading || reconnecting) && (
+        <div className="absolute inset-0 flex items-center justify-center z-50 bg-black/70">
+          <div className="text-center">
+            <CircularProgress size={60} />
+            <p className="mt-4 text-xl">
+              {reconnecting ? "Reconnecting..." : "Connecting to meeting..."}
+            </p>
+            <p className="text-gray-400">Room: {meetingCode}</p>
+            {reconnecting && (
+              <p className="text-gray-400 mt-2">
+                Attempt {reconnectAttemptsRef.current} of 5
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="absolute top-4 left-4 z-10 flex items-center space-x-2">
+        <div
+          className={`w-3 h-3 rounded-full ${
+            connectionStatus === "connected"
+              ? "bg-green-500"
+              : connectionStatus === "connecting"
+              ? "bg-yellow-500"
+              : "bg-red-500"
+          }`}
+        ></div>
+        <span className="text-sm">
+          {connectionStatus === "connected"
+            ? "Connected"
+            : connectionStatus === "connecting"
+            ? reconnecting
+              ? "Reconnecting..."
+              : "Connecting..."
+            : "Disconnected"}
+        </span>
+      </div>
+
+      {!showJoinDialog && (
         <div className="flex flex-1 relative h-full overflow-hidden">
           {showChat && (
             <div className="absolute md:relative z-20 w-full md:w-96 h-full bg-gray-900/90 backdrop-blur-md border-r border-gray-800 flex flex-col">
@@ -860,7 +1020,6 @@ export default function VideoMeetComponent() {
                 <IconButton
                   onClick={() => setShowChat(false)}
                   className="text-white"
-                  aria-label="Close chat"
                 >
                   <Close />
                 </IconButton>
@@ -914,13 +1073,11 @@ export default function VideoMeetComponent() {
                     InputProps={{
                       className: "text-white",
                     }}
-                    aria-label="Type a message"
                   />
                   <Button
                     variant="contained"
                     onClick={sendMessage}
                     className="bg-red-600 hover:bg-red-700"
-                    aria-label="Send message"
                   >
                     Send
                   </Button>
@@ -938,7 +1095,6 @@ export default function VideoMeetComponent() {
                 <IconButton
                   onClick={() => setShowParticipants(false)}
                   className="text-white"
-                  aria-label="Close participants list"
                 >
                   <Close />
                 </IconButton>
@@ -961,11 +1117,7 @@ export default function VideoMeetComponent() {
                         {participant.id === socketIdRef.current && "(You)"}
                       </div>
                     </div>
-                    <IconButton
-                      size="small"
-                      className="text-gray-400"
-                      aria-label="More options"
-                    >
+                    <IconButton size="small" className="text-gray-400">
                       <MoreVert />
                     </IconButton>
                   </div>
@@ -976,7 +1128,6 @@ export default function VideoMeetComponent() {
                   fullWidth
                   startIcon={<PersonAdd />}
                   className="bg-gray-800 hover:bg-gray-700 text-white"
-                  aria-label="Add people"
                 >
                   Add people
                 </Button>
@@ -998,7 +1149,6 @@ export default function VideoMeetComponent() {
                 size="small"
                 className="text-blue-200 border-blue-400/40 hover:border-blue-300 hover:bg-blue-400/20 transition"
                 onClick={handleCopyMeetingCode}
-                aria-label="Copy meeting code"
               >
                 Copy
               </Button>
@@ -1012,14 +1162,12 @@ export default function VideoMeetComponent() {
                 onClick={toggleFullscreen}
                 className="text-white/80 hover:text-white"
                 size="small"
-                aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
               >
                 {fullscreen ? <FullscreenExit /> : <Fullscreen />}
               </IconButton>
               <IconButton
                 className="text-white/80 hover:text-white"
                 size="small"
-                aria-label="Settings"
               >
                 <Settings />
               </IconButton>
@@ -1064,7 +1212,6 @@ export default function VideoMeetComponent() {
                       muted
                       playsInline
                       className="w-full h-full object-cover"
-                      aria-label="Your video"
                     />
                     <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
                       <div className="text-sm font-medium text-white truncate">
@@ -1073,7 +1220,6 @@ export default function VideoMeetComponent() {
                           <MicOff
                             className="text-red-500 ml-1"
                             style={{ fontSize: "1rem" }}
-                            aria-label="Microphone off"
                           />
                         )}
                       </div>
@@ -1082,10 +1228,7 @@ export default function VideoMeetComponent() {
                 ) : (
                   <div className="relative rounded-xl overflow-hidden border border-white/20 shadow-lg bg-black">
                     <div className="w-full h-full flex items-center justify-center bg-gray-900">
-                      <Avatar
-                        className="w-20 h-20 text-3xl"
-                        aria-label="Your avatar"
-                      >
+                      <Avatar className="w-20 h-20 text-3xl">
                         {username?.charAt(0).toUpperCase() || "Y"}
                       </Avatar>
                     </div>
@@ -1096,7 +1239,6 @@ export default function VideoMeetComponent() {
                           <MicOff
                             className="text-red-500 ml-1"
                             style={{ fontSize: "1rem" }}
-                            aria-label="Microphone off"
                           />
                         )}
                       </div>
@@ -1127,18 +1269,10 @@ export default function VideoMeetComponent() {
                           autoPlay
                           playsInline
                           className="w-full h-full object-cover"
-                          aria-label={`Video from ${
-                            participant?.name || "participant"
-                          }`}
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center bg-gray-900">
-                          <Avatar
-                            className="w-20 h-20 text-3xl"
-                            aria-label={`Avatar for ${
-                              participant?.name || "participant"
-                            }`}
-                          >
+                          <Avatar className="w-20 h-20 text-3xl">
                             {participant?.name?.charAt(0).toUpperCase() || "U"}
                           </Avatar>
                         </div>
@@ -1167,7 +1301,6 @@ export default function VideoMeetComponent() {
               <IconButton
                 onClick={handleVideo}
                 className={`${video ? "text-white" : "text-red-500"}`}
-                aria-label={video ? "Turn off camera" : "Turn on camera"}
               >
                 {video ? <Videocam /> : <VideocamOff />}
               </IconButton>
@@ -1177,7 +1310,6 @@ export default function VideoMeetComponent() {
               <IconButton
                 onClick={handleAudio}
                 className={`${audio ? "text-white" : "text-red-500"}`}
-                aria-label={audio ? "Mute microphone" : "Unmute microphone"}
               >
                 {audio ? <Mic /> : <MicOff />}
               </IconButton>
@@ -1188,11 +1320,27 @@ export default function VideoMeetComponent() {
                 <IconButton
                   onClick={handleScreen}
                   className={`${screen ? "text-red-500" : "text-white"}`}
-                  aria-label={screen ? "Stop sharing" : "Share screen"}
                 >
                   {screen ? <StopScreenShare /> : <ScreenShare />}
                 </IconButton>
               </Tooltip>
+            )}
+
+            <Tooltip title={isRecording ? "Stop recording" : "Start recording"}>
+              <IconButton
+                onClick={toggleRecording}
+                className={`${
+                  isRecording ? "text-red-500 animate-pulse" : "text-white"
+                }`}
+              >
+                <FiberManualRecord />
+              </IconButton>
+            </Tooltip>
+
+            {isRecording && (
+              <div className="text-sm text-white px-2">
+                {formatMeetingTime(recordingTime)}
+              </div>
             )}
 
             <Tooltip title="Participants">
@@ -1204,7 +1352,6 @@ export default function VideoMeetComponent() {
                 className={`text-white ${
                   showParticipants ? "bg-red-600/30" : ""
                 }`}
-                aria-label="Show participants"
               >
                 <Badge badgeContent={participants.length} color="error">
                   <People />
@@ -1220,7 +1367,6 @@ export default function VideoMeetComponent() {
                   setNewMessages(0);
                 }}
                 className={`text-white ${showChat ? "bg-red-600/30" : ""}`}
-                aria-label="Show chat"
               >
                 <Badge badgeContent={newMessages} color="error">
                   <Chat />
@@ -1234,7 +1380,6 @@ export default function VideoMeetComponent() {
               <IconButton
                 onClick={handleEndCall}
                 className="bg-red-600 hover:bg-red-700 text-white"
-                aria-label="End call"
               >
                 <CallEnd />
               </IconButton>

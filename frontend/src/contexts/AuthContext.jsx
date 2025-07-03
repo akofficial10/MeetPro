@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import server from "../environment";
 import { auth, googleProvider } from "../firebase";
 import { signInWithPopup } from "firebase/auth";
+import { useEffect } from "react";
 
 export const AuthContext = createContext();
 
@@ -14,30 +15,79 @@ const client = axios.create({
 
 export const AuthProvider = ({ children }) => {
   const navigate = useNavigate();
-  const [userData, setUserData] = useState(null);
-  const [authError, setAuthError] = useState(""); // Added error state
+  const [userData, setUserData] = useState(() => {
+    const storedData = localStorage.getItem("authData");
+    return storedData ? JSON.parse(storedData) : null;
+  });
+  const [authError, setAuthError] = useState("");
 
-  /** GOOGLE SIGN-IN */
   const handleGoogleLogin = async () => {
     try {
-      setAuthError(""); // Clear any previous errors
+      setAuthError("");
       const result = await signInWithPopup(auth, googleProvider);
       const { user } = result;
-      const idToken = await user.getIdToken();
+      const idToken = await user.getIdToken(true); // Force refresh token
 
-      // Send to backend
       const res = await client.post("/google-auth", { idToken });
 
       if (res.status === httpStatus.OK) {
+        const authData = {
+          token: res.data.token,
+          user: res.data.user,
+        };
+
+        localStorage.setItem("authData", JSON.stringify(authData));
         localStorage.setItem("token", res.data.token);
-        setUserData(res.data.user || null);
+
+        setUserData(res.data.user);
         navigate("/home", { replace: true });
       }
     } catch (err) {
       console.error("Google sign-in error:", err);
       setAuthError(err.message || "Google Sign-In failed");
-      throw err; // Re-throw for component to handle
+      throw err;
     }
+  };
+
+  // Add this to your AuthContext
+  const verifyToken = async () => {
+    try {
+      const token = localStorage.getItem("token");
+      if (!token) return false;
+
+      const res = await client.get("/verify-token", {
+        params: { token },
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (res.data.valid && res.data.user) {
+        setUserData(res.data.user);
+        return true;
+      }
+      return false;
+    } catch (err) {
+      console.error("Token verification failed:", err);
+      return false;
+    }
+  };
+
+  // Update your AuthProvider component
+  useEffect(() => {
+    const checkAuth = async () => {
+      const isValid = await verifyToken();
+      if (!isValid) {
+        logout();
+      }
+    };
+
+    checkAuth();
+  }, []);
+
+  const logout = () => {
+    localStorage.removeItem("token");
+    localStorage.removeItem("authData");
+    setUserData(null);
+    navigate("/");
   };
 
   /** REGISTER */
@@ -104,12 +154,6 @@ export const AuthProvider = ({ children }) => {
     } catch (err) {
       throw err.response?.data?.message || "Failed to fetch history";
     }
-  };
-
-  const logout = () => {
-    localStorage.removeItem("token");
-    setUserData(null);
-    navigate("/"); 
   };
 
   /** CONTEXT VALUE */

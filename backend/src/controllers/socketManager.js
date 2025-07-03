@@ -1,8 +1,8 @@
 import { Server } from "socket.io";
 import { db } from "../firebase.js"; // Firebase admin
 
-let connections = {};
-let timeOnline = {};
+const rooms = new Map(); // Stores socket IDs by room code
+const timeOnline = {};
 
 export const connectToSocket = (server) => {
   const io = new Server(server, {
@@ -12,49 +12,81 @@ export const connectToSocket = (server) => {
       allowedHeaders: ["*"],
       credentials: true,
     },
+    connectionStateRecovery: {
+      maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
+      skipMiddlewares: true,
+    },
   });
 
   io.on("connection", (socket) => {
     console.log("Socket connected:", socket.id);
+    let currentRoom = null;
 
-    socket.on("join-call", async (path) => {
-      if (!path) {
-        console.error("No path provided for join-call");
-        return;
-      }
+    if (socket.recovered) {
+      console.log("Socket reconnected:", socket.id);
+      return;
+    }
 
-      // Clean the path to remove any invalid characters
-      const cleanPath = path.replace(/[^a-zA-Z0-9-]/g, "");
-
-      if (!connections[cleanPath]) {
-        connections[cleanPath] = [];
-      }
-      connections[cleanPath].push(socket.id);
-      timeOnline[socket.id] = new Date();
-
-      // Notify others in room
-      for (const connId of connections[cleanPath]) {
-        io.to(connId).emit("user-joined", socket.id, connections[cleanPath]);
-      }
-
-      // Send previous messages from Firestore
+    socket.on("join-call", async (roomCode) => {
       try {
-        const chatSnapshot = await db
-          .collection("meetings")
-          .doc(cleanPath)
-          .collection("messages")
-          .orderBy("timestamp")
-          .get();
+        if (!roomCode || typeof roomCode !== "string") {
+          throw new Error("Invalid room code");
+        }
 
-        const messages = [];
-        chatSnapshot.forEach((doc) => {
-          messages.push(doc.data());
-        });
+        // Clean the room code
+        const cleanRoomCode = roomCode.replace(/[^a-zA-Z0-9-]/g, "");
 
-        // Send all messages at once
-        io.to(socket.id).emit("chat-history", messages);
-      } catch (e) {
-        console.error("Error fetching messages:", e);
+        // Leave any previous room
+        if (currentRoom) {
+          socket.leave(currentRoom);
+          removeFromRoom(currentRoom, socket.id);
+        }
+
+        // Join the new room
+        currentRoom = cleanRoomCode;
+        socket.join(currentRoom);
+
+        // Initialize room if it doesn't exist
+        if (!rooms.has(currentRoom)) {
+          rooms.set(currentRoom, new Set());
+        }
+
+        // Add socket to room
+        rooms.get(currentRoom).add(socket.id);
+        timeOnline[socket.id] = new Date();
+
+        // Get all clients in this room
+        const clients = await io.in(currentRoom).fetchSockets();
+        const clientIds = clients.map((client) => client.id);
+
+        // Notify the client they've joined
+        socket.emit("room-joined", currentRoom);
+
+        // Notify all clients in the room about the new participant
+        io.to(currentRoom).emit("user-joined", socket.id, clientIds);
+
+        // Send previous messages from Firestore
+        try {
+          const chatSnapshot = await db
+            .collection("meetings")
+            .doc(currentRoom)
+            .collection("messages")
+            .orderBy("timestamp")
+            .get();
+
+          const messages = [];
+          chatSnapshot.forEach((doc) => {
+            messages.push(doc.data());
+          });
+
+          // Send all messages at once
+          socket.emit("chat-history", messages);
+        } catch (e) {
+          console.error("Error fetching messages:", e);
+        }
+      } catch (error) {
+        console.error("Error joining room:", error);
+        socket.emit("join-error", error.message);
       }
     });
 
@@ -63,59 +95,49 @@ export const connectToSocket = (server) => {
     });
 
     socket.on("chat-message", async (data, sender) => {
-      const [matchingRoom, found] = Object.entries(connections).reduce(
-        ([room, isFound], [roomKey, roomValue]) => {
-          if (!isFound && roomValue.includes(socket.id)) {
-            return [roomKey, true];
-          }
-          return [room, isFound];
-        },
-        ["", false]
-      );
+      if (!currentRoom) return;
 
-      if (found && matchingRoom) {
-        console.log("Storing message in Firestore for room:", matchingRoom);
+      console.log("Storing message in Firestore for room:", currentRoom);
 
-        try {
-          await db
-            .collection("meetings")
-            .doc(matchingRoom)
-            .collection("messages")
-            .add({
-              sender: sender,
-              data: data,
-              socketIdSender: socket.id,
-              timestamp: new Date(),
-            });
-
-          connections[matchingRoom].forEach((elem) => {
-            io.to(elem).emit("chat-message", data, sender, socket.id);
+      try {
+        await db
+          .collection("meetings")
+          .doc(currentRoom)
+          .collection("messages")
+          .add({
+            sender: sender,
+            data: data,
+            socketIdSender: socket.id,
+            timestamp: new Date(),
           });
-        } catch (e) {
-          console.error("Error saving message:", e);
-        }
+
+        io.to(currentRoom).emit("chat-message", data, sender, socket.id);
+      } catch (e) {
+        console.error("Error saving message:", e);
       }
     });
 
     socket.on("disconnect", () => {
       console.log("Socket disconnected:", socket.id);
 
-      for (const [room, clients] of Object.entries(connections)) {
-        const index = clients.indexOf(socket.id);
-        if (index !== -1) {
-          clients.splice(index, 1);
-
-          clients.forEach((clientId) =>
-            io.to(clientId).emit("user-left", socket.id)
-          );
-
-          if (clients.length === 0) {
-            delete connections[room];
-          }
-        }
+      if (currentRoom) {
+        removeFromRoom(currentRoom, socket.id);
+        socket.to(currentRoom).emit("user-left", socket.id);
       }
+
       delete timeOnline[socket.id];
     });
+
+    function removeFromRoom(room, socketId) {
+      if (rooms.has(room)) {
+        const roomSet = rooms.get(room);
+        roomSet.delete(socketId);
+
+        if (roomSet.size === 0) {
+          rooms.delete(room);
+        }
+      }
+    }
   });
 
   return io;

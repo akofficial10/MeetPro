@@ -92,10 +92,8 @@ export const googleAuth = async (req, res) => {
   }
 
   try {
-    // Verify the ID token
     const decodedToken = await admin.auth().verifyIdToken(idToken);
 
-    // Additional verification
     if (decodedToken.aud !== "meet-pro-d9458") {
       throw new Error("Invalid audience claim");
     }
@@ -103,13 +101,12 @@ export const googleAuth = async (req, res) => {
     const { uid, email, name, picture } = decodedToken;
     const username = email.split("@")[0];
 
-    // Check if user exists
     const userRef = db.collection("users").doc(username);
     const userSnap = await userRef.get();
 
     let token;
     if (!userSnap.exists) {
-      // Create new user
+      // Create new user with persistent token
       token = crypto.randomBytes(20).toString("hex");
       await userRef.set({
         uid,
@@ -120,11 +117,24 @@ export const googleAuth = async (req, res) => {
         token,
         authProvider: "google",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastLogin: admin.firestore.FieldValue.serverTimestamp(),
       });
     } else {
-      // User exists - generate new token
-      token = crypto.randomBytes(20).toString("hex");
-      await userRef.update({ token });
+      // Use existing token if it's still valid (not expired)
+      const userData = userSnap.data();
+      const tokenAge =
+        Date.now() - (userData.lastLogin?.toDate()?.getTime() || 0);
+      const tokenMaxAge = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+      token =
+        userData.token && tokenAge < tokenMaxAge
+          ? userData.token
+          : crypto.randomBytes(20).toString("hex");
+
+      await userRef.update({
+        token,
+        lastLogin: admin.firestore.FieldValue.serverTimestamp(),
+      });
     }
 
     return res.status(httpStatus.OK).json({
@@ -139,6 +149,47 @@ export const googleAuth = async (req, res) => {
     console.error("Google auth error:", error);
     return res.status(500).json({
       message: `Authentication failed: ${error.message}`,
+    });
+  }
+};
+
+// Add this to your userController.js
+export const verifyToken = async (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1] || req.query.token;
+  
+  if (!token) {
+    return res.status(httpStatus.UNAUTHORIZED).json({ 
+      valid: false,
+      message: "No token provided" 
+    });
+  }
+
+  try {
+    const usersQuery = await db.collection("users")
+      .where("token", "==", token)
+      .limit(1)
+      .get();
+
+    if (usersQuery.empty) {
+      return res.status(httpStatus.OK).json({ 
+        valid: false,
+        message: "Invalid token" 
+      });
+    }
+
+    // Get user data without sensitive information
+    const userData = usersQuery.docs[0].data();
+    const { password, token: _, ...safeUserData } = userData;
+
+    return res.status(httpStatus.OK).json({ 
+      valid: true,
+      user: safeUserData
+    });
+  } catch (e) {
+    console.error("Token verification error:", e);
+    return res.status(httpStatus.INTERNAL_SERVER_ERROR).json({ 
+      valid: false,
+      message: `Token verification failed: ${e.message}` 
     });
   }
 };

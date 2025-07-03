@@ -15,12 +15,12 @@ connectToSocket(server);
 app.set("port", process.env.PORT || 8000);
 
 // ✅ Middleware
-app.use(
-  cors({
-    origin: ["https://meetpro-1.onrender.com"],
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST"],
+  allowedHeaders: ["*"],
+  credentials: true,
+}));
 app.use(express.json({ limit: "40kb" }));
 app.use(express.urlencoded({ limit: "40kb", extended: true }));
 
