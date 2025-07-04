@@ -32,4 +32,28 @@ MeetPro enables users to sign up via Google or email, create or join meeting roo
 
 ---
 
+##  How It Works
+
+1. **Sign Up / Login**  
+   - Users register or sign in securely with Email/Password or Google using Firebase Authentication.
+
+2. **Create or Join Meetings**  
+   - Users can generate a unique 8-character meeting code to create a room.
+   - Others can join using that code.
+
+3. **Token-Based Access Control**  
+   - Frontend sends a secure token to the Express backend.
+   - Backend verifies the token before granting access to the meeting room.
+
+4. **Pre-Join Settings**  
+   - Users can choose to enable/disable their camera and microphone before joining.
+
+5. **Real-Time Chat**  
+   - Messages are stored and synced using Firestore for instant updates.
+   - Each chat includes user details, timestamps, and room info.
+
+6. **Responsive & Modern UI**  
+   - Built with React and Tailwind CSS for a smooth experience on all devices.
+
+
 
